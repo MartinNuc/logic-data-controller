@@ -5,4 +5,9 @@ authors = ["pi"]
 edition = "2018"
 
 [dependencies]
- sysfs_gpio = "0.5"
+  sysfs_gpio = "0.5"
+  crossbeam-channel = "0.4"
+  tokio = { version = "0.2", features = ["macros"] }
+  warp = "0.2"
+  serde = { version = "1.0", features = ["derive"] }
+  serde_json = "1.0"

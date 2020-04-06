@@ -1,5 +1,8 @@
-mod signal_decoder;
-use signal_decoder::SignalDecoder;
+pub mod signal_decoder;
+
+use crate::table_controller::signal_decoder::SignalDecoder;
+use crate::web_server::TableInfo;
+use crossbeam_channel::{Receiver, Sender};
 use sysfs_gpio::{Edge, Error, Pin, PinPoller};
 
 pub struct TableController {
@@ -13,6 +16,9 @@ pub struct TableController {
   up_controller: Pin,
   down_motor: Pin,
   down_controller: Pin,
+  tx_table_info_response: Sender<TableInfo>,
+  rx_table_info_request: Receiver<()>,
+  rx_set_target_height: Receiver<i32>,
 }
 
 pub struct ControlPins {
@@ -25,7 +31,12 @@ pub struct ControlPins {
 }
 
 impl TableController {
-  pub fn new(control_pins: ControlPins) -> TableController {
+  pub fn new(
+    control_pins: ControlPins,
+    tx_table_info_response: Sender<TableInfo>,
+    rx_table_info_request: Receiver<()>,
+    rx_set_target_height: Receiver<i32>,
+  ) -> TableController {
     match TableController::initialize(control_pins) {
       Ok((
         signal_motor,
@@ -45,6 +56,9 @@ impl TableController {
         up_controller,
         down_motor,
         down_controller,
+        tx_table_info_response,
+        rx_table_info_request,
+        rx_set_target_height,
       },
       Err(_error) => panic!("Failed to initialize table"),
     }
@@ -87,10 +101,36 @@ impl TableController {
   }
 
   pub fn tick(self: &mut Self) -> Result<(), Error> {
+    self.receive_new_target_height();
+    self.send_current_table_height();
     self.handle_current_signal_bit()?;
     self.handle_switch_inputs()?;
     self.control_table_movement()?;
     Ok(())
+  }
+
+  fn receive_new_target_height(self: &mut Self) {
+    if let Ok(val) = self.rx_set_target_height.try_recv() {
+      self.target_height = Some(val);
+      self.is_auto_mode = true;
+      self.direction = if self.target_height < self.signal_decoder.current_height {
+        Direction::Down
+      } else {
+        Direction::Up
+      }
+    }
+  }
+
+  fn send_current_table_height(&self) {
+    if let Ok(_val) = self.rx_table_info_request.try_recv() {
+      self
+        .tx_table_info_response
+        .send(TableInfo {
+          current_height: self.signal_decoder.current_height,
+          target_height: self.target_height,
+        })
+        .unwrap();
+    }
   }
 
   fn handle_current_signal_bit(self: &mut Self) -> Result<(), Error> {
@@ -117,12 +157,12 @@ impl TableController {
 
   fn control_table_movement(self: &mut Self) -> Result<(), Error> {
     if !self.is_auto_mode {
-      return Ok(())
+      return Ok(());
     }
 
     if self.should_move_up() {
       return self.move_table_up();
-    } else if self.shloud_move_down() {
+    } else if self.should_move_down() {
       return self.move_table_down();
     } else {
       return self.stop_table();
@@ -131,16 +171,16 @@ impl TableController {
 
   fn should_move_up(&self) -> bool {
     return self.direction == Direction::Up
-        && self.signal_decoder.current_height.is_some()
-        && self.target_height.is_some()
-        && self.signal_decoder.current_height.unwrap() < self.target_height.unwrap();
+      && self.signal_decoder.current_height.is_some()
+      && self.target_height.is_some()
+      && self.signal_decoder.current_height.unwrap() < self.target_height.unwrap() - 1;
   }
 
-  fn shloud_move_down(&self) -> bool {
+  fn should_move_down(&self) -> bool {
     return self.direction == Direction::Down
-        && self.signal_decoder.current_height.is_some()
-        && self.target_height.is_some()
-        && self.signal_decoder.current_height.unwrap() > self.target_height.unwrap();
+      && self.signal_decoder.current_height.is_some()
+      && self.target_height.is_some()
+      && self.signal_decoder.current_height.unwrap() > self.target_height.unwrap() + 1;
   }
 
   fn move_table_down(&self) -> Result<(), Error> {
@@ -155,9 +195,11 @@ impl TableController {
     Ok(())
   }
 
-  fn stop_table(&self) -> Result<(), Error> {
+  fn stop_table(self: &mut Self) -> Result<(), Error> {
     self.down_motor.set_value(0)?;
     self.up_motor.set_value(0)?;
+    self.direction = Direction::None;
+    self.is_auto_mode = false;
     Ok(())
   }
 

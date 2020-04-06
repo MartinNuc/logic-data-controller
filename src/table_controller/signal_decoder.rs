@@ -56,10 +56,6 @@ impl SignalDecoder {
     // Plausibility check 2: height must not differ more than 5cm from last value
     if self.current_height.is_none() || (self.current_height.unwrap() - new_height).abs() < 5 {
       self.current_height = Some(new_height);
-      println!(
-        "Mam to !!!!!!! {:?}",
-        self.current_height.unwrap()
-      );  
     }
   }
 }
